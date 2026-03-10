@@ -1,0 +1,94 @@
+name: Backend Claude Code Review
+
+on:
+  workflow_call:
+    inputs:
+      prompt:
+        description: Custom prompt for Claude code review
+        required: false
+        type: string
+        default: |
+          Please review this pull request and provide feedback on:
+          - Code quality and best practices
+          - Potential bugs or issues
+          - Performance considerations
+
+          You can skip:
+          - Security concerns
+          - Test coverage
+
+          In your review, list only improvement suggestions and omit positive feedback.
+
+          Use the repository's CLAUDE.md for guidance on style and conventions. Be constructive and helpful in your feedback.
+
+          Use `gh pr comment` with your Bash tool to leave your review as a comment on the PR.
+      claude_args:
+        description: Additional arguments passed to Claude Code
+        required: false
+        type: string
+        default: '--allowed-tools "Bash(gh issue view:*),Bash(gh search:*),Bash(gh issue list:*),Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*)"'
+    secrets:
+      ANTHROPIC_API_KEY:
+        required: true
+      DOCS_REPO_PAT:
+        required: true
+
+jobs:
+  claude-review:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      id-token: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Checkout coding standards
+        uses: actions/checkout@v4
+        with:
+          repository: cardinalblue/docs
+          path: coding-standards
+          token: ${{ secrets.DOCS_REPO_PAT }}
+          fetch-depth: 1
+
+      - name: Dismiss old Claude bot comments
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Get PR comments from claude[bot] and hide them as outdated
+          REPO="${{ github.repository }}"
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+          # Get issue comments (general PR conversation comments posted via `gh pr comment`)
+          gh api --paginate "repos/$REPO/issues/$PR_NUMBER/comments" --jq '.[] | select(.user.login == "claude[bot]") | .node_id' | while read -r comment_node_id; do
+            if [ -n "$comment_node_id" ]; then
+              echo "Hiding review comment: $comment_node_id"
+              gh api graphql -f query='
+                mutation($id: ID!) {
+                  minimizeComment(input: {subjectId: $id, classifier: OUTDATED}) {
+                    minimizedComment {
+                      isMinimized
+                    }
+                  }
+                }' -f id="$comment_node_id"
+            fi
+          done
+
+      - name: Run Claude Code Review
+        id: claude-review
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+
+            ${{ inputs.prompt }}
+
+          # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
+          # or https://code.claude.com/docs/en/cli-reference for available options
+          claude_args: ${{ inputs.claude_args }}
