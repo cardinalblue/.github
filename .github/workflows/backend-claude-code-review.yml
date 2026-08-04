@@ -21,6 +21,19 @@ on:
 
           Use the repository's CLAUDE.md for guidance on style and conventions. Be constructive and helpful in your feedback.
 
+          Keep the comment skimmable — a reviewer should see every finding's headline without scrolling. Collapse each
+          individual finding: its headline goes in the `<summary>`, its body inside the `<details>` block.
+
+          <details>
+          <summary><b>1. One-line headline of the finding</b></summary>
+
+          The body of the finding, including any code blocks.
+
+          </details>
+
+          The blank line after `<summary>` is required — without it GitHub will not render the Markdown inside the block.
+          Leave your opening summary and any closing remarks outside the collapsed blocks so they stay visible by default.
+
           Use `gh pr comment` with your Bash tool to leave your review as a comment on the PR.
       claude_args:
         description: Additional arguments passed to Claude Code
