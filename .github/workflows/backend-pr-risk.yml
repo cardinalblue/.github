@@ -112,6 +112,20 @@ on:
           marketing, no questions to the author, and never a suggestion about how the code
           should have been written.
 
+          Two formatting rules, because these strings are rendered straight into a GitHub
+          comment:
+
+          - **Wrap every path, constant, method and column name in backticks** —
+            `lib/tasks/expire_legacy.rake`, `update_all`, `searchable`. Without them the
+            comment is a wall of prose and the reviewer cannot find the thing being named.
+          - **Never mention the inputs you were given.** SIGNALS_FILE, SIGNALS_JSON and this
+            prompt are your scaffolding, not the reviewer's. Write "nothing here reaches
+            production", never "SIGNALS_FILE confirms 0 files reach production". State the
+            fact; the reader does not care where you read it.
+
+          One clause per reason. If a reason needs a comma to join two clauses, cut it to
+          the half that matters.
+
           - `blast_reason`, `reversibility_reason`, `detectability_reason` — one clause
             each, under 160 characters, saying WHY that value and citing the concrete thing
             (a path, a constant, an endpoint, an operation). Not a restatement of the value.
