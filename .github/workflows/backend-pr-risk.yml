@@ -36,6 +36,23 @@ on:
           Your reader is the person about to review this PR. They want to know how much
           attention it deserves and where to spend it — not what is wrong with it.
 
+          ## You never report a defect
+
+          You will sometimes notice a bug while reading: an inverted condition, a value the
+          enum does not define, a wrong variable, a typo. **Do not name it, anywhere, in any
+          string.** Another workflow on this repository reports findings. Two bots making
+          claims about the same diff teaches people to skip both, and a claim made here
+          cannot be replied to, resolved or declined the way a review thread can.
+
+          A suspected defect is also not evidence for an axis. Judge the change as written,
+          assuming it does what the author meant it to do. "This task raises before it
+          writes anything, so a mistake would surface at once" is a finding wearing an axis
+          as a disguise — rate the change the author intended, and let the reviewer bot say
+          whether the code delivers it.
+
+          What you do with the observation instead: nothing. It is not your job, and the
+          reviewer who reads the hunk you pointed at will see it.
+
           ## What you produce
 
           You answer three questions about the change, write three short reasons, and stop.
@@ -135,7 +152,9 @@ on:
             diff reaches production, how much is tests, what the one load-bearing hunk is.
           - `where_to_look` — one or two sentences naming the files or hunks that deserve
             real reading, and what the rest of the diff is so the reviewer can skip it.
-            Required.
+            Required. Say what the hunk DOES and why it carries the risk, never what is
+            wrong with it: "the scope decides which templates are permanently flagged", not
+            "the scope filters on a value the enum does not define".
           - `before_merge` — at most one sentence, and ONLY when the diff itself names a
             concrete prerequisite: an environment variable that must exist, an ordering
             against a client release or another PR, a backfill that must run, data that

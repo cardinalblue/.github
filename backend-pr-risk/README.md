@@ -60,6 +60,13 @@ anything.
 - **Fail-open and silent.** A missing or malformed judgment posts nothing and leaves the
   previous comment in place. "Risk unknown" is not a thing this bot says. A stale level with
   an older sha in its footer is honest; an invented one is not.
+- **A defect is never named, and never counts as evidence.** The judgment sometimes spots a
+  real bug while reading. It says nothing about it, in any string, and does not let it move
+  an axis — it rates the change the author intended. Findings belong to
+  `backend-claude-code-review.yml`, where the author can reply to them, resolve them or
+  decline them; a claim made in this comment can do none of those. Observed live on
+  pic-collage-server#4426, where a run justified `detectability: immediate` with an
+  undefined enum value it had noticed.
 - **Operations are candidates, not verdicts.** `update_all` in a migration is a backfill;
   the same call in a test factory is nothing. The regex finds them; the model decides.
   They are only scanned in files that a production process actually loads — a
