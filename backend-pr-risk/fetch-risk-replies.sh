@@ -11,9 +11,20 @@
 # level, and the author has to make the same argument again — which is the loop the
 # reviewer redesign already had to fix once.
 #
-# Who counts: collaborators (OWNER / MEMBER / COLLABORATOR) who are not bots. Anyone can
-# comment on a PR; not everyone can move its risk level. Bots are excluded because our own
-# comment advertises `/risk` in its footer and would otherwise feed itself.
+# Who counts: any human. Bots are excluded because our own comment advertises `/risk` in
+# its footer and would otherwise feed itself.
+#
+# This deliberately does NOT filter on `author_association`, even though the workflow's
+# trigger does. The two see different values for the same comment: the event payload
+# reports `MEMBER`, while this listing — made with the Actions `GITHUB_TOKEN` — does not,
+# because a private organization membership is invisible to a repository-scoped token.
+# Verified on pic-collage-server#4428, where the trigger fired on a MEMBER comment and this
+# script then collected zero replies from the same comment 21 seconds later.
+#
+# Write access is still enforced, once, where the value is trustworthy: the workflow's `if`
+# reads it from the event payload. Everyone who can comment on a PR in these private repos
+# already has read access granted by the org, so re-checking it here bought nothing and
+# silently dropped every reply.
 #
 # Output: $OUT (JSON array, newest last) and $DIGEST (markdown for the prompt).
 # Never fails the caller — no replies and an unreadable listing both produce an empty set.
@@ -51,7 +62,6 @@ printf '%s' "$LIST" | jq --argjson max "$MAX" '
   (if type == "array" then . else [.] end)
   | [ .[]
       | select(.user.type != "Bot")
-      | select(.author_association | IN("OWNER","MEMBER","COLLABORATOR"))
       | select((.body // "") | contains("/risk"))
       | { id, login: .user.login, association: .author_association,
           url: .html_url, created_at,
@@ -75,4 +85,7 @@ COUNT="$(jq 'length' "$OUT" 2>/dev/null || echo 0)"
   fi
 } > "$DIGEST"
 
+# Logged per reply: a future mismatch between what the trigger saw and what this collected
+# should be readable straight from the run, not re-derived from timestamps.
+jq -r '.[] | "  kept: \(.login) (\(.association)) \(.url)"' "$OUT" 2>/dev/null || true
 echo "Collected ${COUNT} /risk reply(ies) for ${REPO}#${PR}."

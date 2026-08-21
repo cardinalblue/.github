@@ -354,7 +354,7 @@ jobs:
           github_token: ${{ github.token }}
           prompt: |
             REPO: ${{ github.repository }}
-            PR NUMBER: ${{ github.event.pull_request.number }}
+            PR NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
             HEAD SHA: ${{ steps.pr.outputs.sha }}
             SIGNALS_FILE: /tmp/risk-digest.md
             SIGNALS_JSON: /tmp/risk-signals.json
