@@ -49,6 +49,42 @@ The model never writes the comment and never picks the level. That is what makes
 identical on every PR, and it means the level rule can be re-tuned without re-prompting
 anything.
 
+## When the author disagrees
+
+The judgement is made from the diff, and the diff does not say "that consumer is not in
+production yet" or "we agreed this format with the other team last week". So the author can
+correct it: **reply with `/risk` and the reason.**
+
+That re-runs the triage with the reply as *trusted* input — the team's rule is that the
+author's judgement wins, because they hold context the code cannot show. The axes move, the
+level is recomputed from them by the usual rule, and a `> [!NOTE]` block at the end of the
+comment records what moved and why, with a link to the reply:
+
+```
+> [!NOTE]
+> Adjusted after a `/risk` reply:
+>
+> Risk lowered from **high** to **medium**.
+>
+> **Blast radius** 🔴 `wide` → 🟢 `internal` — the author confirmed the TTM retraining
+> pipeline is still under development, so no existing feature reads the export ([reply](…))
+```
+
+Three things make this work rather than become an argument:
+
+- **The history accumulates in the one comment.** The conclusion and how it got there are
+  both in the thing a reviewer already reads; nobody has to scroll the thread.
+- **The replies are re-read on every later run.** Without that, the next push recomputes
+  from the diff alone, silently re-raises the level, and the author has to argue again —
+  the loop `backend-claude-code-review.yml` already had to be rewritten to escape.
+- **The script decides what moved, the model only says why.** An adjustment the model
+  claims but did not make is dropped, so the history stays true even when the judgement is
+  wrong.
+
+Only `/risk` comments from OWNER / MEMBER / COLLABORATOR count, and never from a bot —
+our own comment advertises `/risk` in its footer, so without the bot filter it would feed
+itself. A `/risk` with no reason changes nothing.
+
 ## Properties worth keeping
 
 - **Low renders two lines and no table.** Most PRs are Low. A three-row table on a
