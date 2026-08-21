@@ -251,21 +251,26 @@ if [ "$REPLY_COUNT" -gt 0 ] && [ -n "$PRIOR_LEVEL" ]; then
     def src($axis): ([ $adj[] | select(.axis == $axis) | .source_url ]
                      | map(select(startswith("http"))) | .[0] // "");
     def link($axis): (src($axis) | if . == "" then "" else " ([reply](\(.)))" end);
+    # Only an ATTRIBUTED change earns a line. An axis that moved without the model
+    # crediting a reply is the model changing its mind between runs, not an adjustment —
+    # the table already shows the new value, and a note under the heading "Adjusted after a
+    # `/risk` reply" would be a false claim about why.
+    #
+    # Observed on pic-collage-stickers#1672: `detectability` flipped delayed → immediate on
+    # one run and back on the next, appending two reasonless lines to a block that was
+    # otherwise a clean record of what the reply changed.
     def moved($axis; $from; $to):
-      if $from == "" or $from == $to then empty
+      if $from == "" or $from == $to or why($axis) == "" then empty
       else "**\(axis_name($axis))** \(emoji($from)) `\($from)` → \(emoji($to)) `\($to)`"
-           + (why($axis) | if . == "" then "." else " — \(.)" end)
-           + link($axis)
+           + " — \(why($axis))" + link($axis)
       end;
     def rank($l): {low:0, medium:1, high:2}[$l] // -1;
 
     [ moved("blast_radius";  $pb;   $nb),
       moved("reversibility"; $prev; $nr),
       moved("detectability"; $pd;   $nd),
-      ( if $phb == "yes" and $nbefore == "" then
-          "**Before merge** cleared"
-          + (why("before_merge") | if . == "" then "." else " — \(.)" end)
-          + link("before_merge")
+      ( if $phb == "yes" and $nbefore == "" and why("before_merge") != "" then
+          "**Before merge** cleared — \(why("before_merge"))" + link("before_merge")
         else empty end )
     ]
     | if length > 0 and $pl != $nl then
