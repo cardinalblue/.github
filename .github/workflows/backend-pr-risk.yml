@@ -352,6 +352,10 @@ jobs:
           # a PR touches the caller workflow file — so PRs under .github/workflows/ would
           # silently get no triage.
           github_token: ${{ github.token }}
+          # SAA opens PRs a human still merges, so bot-authored PRs are triaged on
+          # purpose (see each repo's pr-risk.yml). The action blocks bot actors unless
+          # they are listed here.
+          allowed_bots: "piccollage-backend-saa"
           prompt: |
             REPO: ${{ github.repository }}
             PR NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
