@@ -254,6 +254,9 @@ jobs:
           # with push access could exfiltrate the same secrets from any other job. This is the
           # trust model tryout.yml already documents and accepts.
           github_token: ${{ github.token }}
+          # Claude-authored PRs are reviewed on purpose (a human still merges them).
+          # The action blocks bot actors unless they are listed here.
+          allowed_bots: "claude"
           prompt: |
             REPO: ${{ github.repository }}
             PR NUMBER: ${{ github.event.pull_request.number }}
