@@ -21,11 +21,15 @@
 #   3. One comment, edited in place on every push. Edits do not notify, so the level stays
 #      current for free. Low risk renders two lines and no table.
 #
-# The author can correct it. A comment containing `/risk` re-runs the triage with that
-# reply as trusted input, and the resulting comment carries a `> [!NOTE]` block recording
+# The author can correct it. A comment with a line that starts with `/risk` re-runs the
+# triage with that reply as trusted input, and the resulting comment carries a `> [!NOTE]` block recording
 # what moved and why. The replies are re-read on EVERY later run, not just the one the
 # comment triggered — otherwise the next push recomputes from the diff alone, silently
 # re-raises the level, and the author has to make the same argument again.
+#
+# A re-run on the SAME commit keeps every axis that no reply moved (post-risk.sh enforces
+# it; the prompt says it). Without that, each `/risk` comment was a fresh roll of the dice:
+# pic-collage-stickers#1750 went medium → high → medium on one commit.
 name: Backend PR Risk Triage
 
 on:
@@ -106,8 +110,27 @@ on:
           clearing it. Never list an axis you did not change — the workflow compares your
           answer with the previous one and drops any claim that did not happen.
 
+          The other direction matters as much: every axis you move because of a reply
+          needs its entry, even when you move it further than the reply asked. On a run
+          for the same commit, a move with no entry is thrown away and the old value is
+          kept, so the person's point is lost.
+
           A reply can also raise an axis. A reviewer writing "that table has 40M rows"
           works the same way.
+
+          ## The triage already on this PR
+
+          PRIOR_FILE holds the triage that is published on this PR now, and says which
+          commit it was written for. Read it before you rate anything.
+
+          - **Same commit.** The code has not changed, and a `/risk` reply started this run.
+            Start from the three values in PRIOR_FILE. Change an axis only because a reply
+            gives a reason to, and record each change in `adjustments`. Do not re-rate the
+            diff from scratch: the same diff deserves the same answer.
+          - **Older commit, or no record of the commit.** The code changed. Rate the current
+            diff. Keep a previous value when it still fits, and change it when the new code
+            gives a concrete reason. A value can go down as well as up.
+          - **No triage yet.** Rate the diff from scratch.
 
           ## The three axes
 
@@ -264,7 +287,53 @@ on:
         required: true
 
 jobs:
+  # Decides whether a comment is a `/risk` command, before the triage job starts. The
+  # caller stubs can only test `contains(body, '/risk')`, and that also matches a person
+  # quoting our comment, whose footer says "Reply with `/risk`". The rule lives in
+  # risk-command.jq, which fetch-risk-replies.sh reads too, so the two never disagree.
+  #
+  # A separate job, not a first step: the triage job cancels any run in progress for the
+  # same PR, and a quote that is not a command should not cancel a real triage. A first
+  # step would join that group before it could decide; a job skipped by its `if` is meant
+  # never to join it.
+  gate:
+    runs-on: ubuntu-latest
+    outputs:
+      run: ${{ steps.check.outputs.run }}
+    steps:
+      - name: Checkout risk-triage scripts
+        if: github.event_name == 'issue_comment'
+        uses: actions/checkout@v4
+        with:
+          repository: cardinalblue/.github
+          ref: ${{ inputs.scripts_ref }}
+          path: _cb_risk
+          fetch-depth: 1
+
+      - name: Is this a /risk command?
+        id: check
+        env:
+          EVENT: ${{ github.event_name }}
+          # Through env, never inlined into the script: the body is untrusted text.
+          BODY: ${{ github.event.comment.body }}
+        run: |
+          set -uo pipefail
+          if [ "$EVENT" != "issue_comment" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          IS="$(jq -nr -L _cb_risk/backend-pr-risk --arg b "$BODY" \
+            'include "risk-command"; $b | is_risk_command' 2>/dev/null || echo false)"
+          if [ "$IS" = "true" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "No line of this comment starts with /risk (a quote or a mention); not re-running the triage."
+          fi
+
   risk-triage:
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
     runs-on: ubuntu-latest
     # One triage in flight per PR. The comment is a snapshot of the head commit, so an
     # older run finishing last would leave a stale level on screen.
@@ -343,6 +412,15 @@ jobs:
             --repo "$REPO" --pr "$PR_NUMBER" \
             --out /tmp/risk-replies.json --digest /tmp/risk-replies.md
 
+      # The triage on the PR now, as the model's starting point. It also tells the model
+      # whether the code changed since, which decides how freely it may re-rate.
+      - name: Read the previous triage
+        run: |
+          echo "_No risk triage is published on this PR yet._" > /tmp/risk-prior.md
+          _cb_risk/backend-pr-risk/post-risk.sh \
+            --repo "$REPO" --pr "$PR_NUMBER" --sha "${{ steps.pr.outputs.sha }}" \
+            --emit-prior /tmp/risk-prior.md || true
+
       - name: Judge the risk
         uses: anthropics/claude-code-action@v1
         with:
@@ -363,6 +441,7 @@ jobs:
             SIGNALS_FILE: /tmp/risk-digest.md
             SIGNALS_JSON: /tmp/risk-signals.json
             RISK_REPLIES_FILE: /tmp/risk-replies.md
+            PRIOR_FILE: /tmp/risk-prior.md
 
             ${{ inputs.prompt }}
           claude_args: ${{ inputs.claude_args }}

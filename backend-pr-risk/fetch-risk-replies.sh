@@ -56,13 +56,16 @@ if ! LIST="$(gh api --paginate "repos/${REPO}/issues/${PR}/comments" 2>/tmp/_ris
   exit 0
 fi
 
-# `contains("/risk")` rather than a word boundary: `/risk`, `/risk please`, and a sentence
-# ending `... /risk.` all mean the same thing to the person typing it.
-printf '%s' "$LIST" | jq --argjson max "$MAX" '
+# A reply is a comment with a line that starts with `/risk` — the same rule the workflow's
+# gate job uses to decide whether to run at all, read from the same file. See
+# risk-command.jq for why a bare `contains("/risk")` was wrong.
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+printf '%s' "$LIST" | jq -L "$SCRIPT_DIR" --argjson max "$MAX" '
+  include "risk-command";
   (if type == "array" then . else [.] end)
   | [ .[]
       | select(.user.type != "Bot")
-      | select((.body // "") | contains("/risk"))
+      | select(.body | is_risk_command)
       | { id, login: .user.login, association: .author_association,
           url: .html_url, created_at,
           body: ((.body // "") | .[0:2000]) } ]
