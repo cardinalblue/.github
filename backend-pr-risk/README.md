@@ -85,6 +85,14 @@ Only `/risk` comments from OWNER / MEMBER / COLLABORATOR count, and never from a
 our own comment advertises `/risk` in its footer, so without the bot filter it would feed
 itself. A `/risk` with no reason changes nothing.
 
+A comment counts only when one of its lines **starts** with `/risk`, like any slash
+command. Quoting the bot's comment copies its footer ("Reply with `/risk` …"), and a bare
+"contains `/risk`" rule re-ran the whole triage on that quote (pic-collage-stickers#1750,
+pic-collage-server#4565). The rule is in `risk-command.jq`. The workflow's `gate` job and
+`fetch-risk-replies.sh` both read it, so a comment cannot start a run and then be ignored
+as a reply. The caller stubs still test `contains(body, '/risk')`: that only decides
+whether the gate job starts.
+
 ## Properties worth keeping
 
 - **Low renders two lines and no table.** Most PRs are Low. A three-row table on a
@@ -93,6 +101,14 @@ itself. A `/risk` with no reason changes nothing.
   the level current costs the author nothing.
 - **No ratchet.** Unlike the iOS tier classifier, the level may fall when an author drops
   the migration. This is information, not a gate.
+- **Same commit, same answer.** A run on the commit the comment was written for (a `/risk`
+  reply, not a push) has no new code to judge. An axis may move there only with a credited
+  `adjustments` entry. Any other move is undone by `post-risk.sh`, and with no credited
+  entry at all the previous judgment stands, prose included. The comment's hidden state
+  records the full sha and the rendered judgment for this. The model also reads the
+  previous triage (`--emit-prior`) as its starting point. Without this rule,
+  pic-collage-stickers#1750 went medium → high → medium on one commit, each time with a
+  note saying the reply moved nothing.
 - **Fail-open and silent.** A missing or malformed judgment posts nothing and leaves the
   previous comment in place. "Risk unknown" is not a thing this bot says. A stale level with
   an older sha in its footer is honest; an invented one is not.

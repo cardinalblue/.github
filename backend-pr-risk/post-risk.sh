@@ -27,6 +27,13 @@
 # runs, so the comment carries both the conclusion and how it got there — and nobody has to
 # read the thread to find out.
 #
+# SAME COMMIT, SAME ANSWER. A run on the commit the comment was already written for (a
+# `/risk` reply, not a push) has no new code to judge. Any axis the model moves there
+# without crediting a reply is the model changing its mind, not new information, so the
+# previous value is kept. On pic-collage-stickers#1750 the level went medium → high → medium
+# on one commit, each time with the note "it does not move any axis". A push still re-rates
+# freely: that is the no-ratchet rule above.
+#
 # That history is never parsed back out of the rendered markdown. Each run writes a hidden,
 # base64-encoded state blob into the comment and reads it on the next run. Parsing our own
 # prose would break the first time a reason contained a pipe or a newline.
@@ -36,7 +43,7 @@
 # unknown" is not a thing this bot says.
 set -uo pipefail
 
-REPO="" PR="" SHA="" RISK_FILE="" REPLIES_FILE="" PRIOR_BODY_FILE="" DRY_RUN=0 MAX_NOTES=5
+REPO="" PR="" SHA="" RISK_FILE="" REPLIES_FILE="" PRIOR_BODY_FILE="" EMIT_PRIOR="" DRY_RUN=0 MAX_NOTES=5
 while [ $# -gt 0 ]; do
   case "$1" in
     --repo) REPO="$2"; shift ;;
@@ -47,6 +54,9 @@ while [ $# -gt 0 ]; do
     # Test hook: read the previous comment from a file instead of the API, so the whole
     # adjustment path can be exercised with --dry-run and no network.
     --prior-body-file) PRIOR_BODY_FILE="$2"; shift ;;
+    # Run before the model, not after it: write the triage currently on the PR to this
+    # file as markdown for the prompt, then exit. One parser of our own state, not two.
+    --emit-prior) EMIT_PRIOR="$2"; shift ;;
     --max-notes) MAX_NOTES="$2"; shift ;;
     --dry-run) DRY_RUN=1 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
@@ -64,7 +74,90 @@ STATE_PREFIX='<!-- cb-pr-risk:state '
 SHORT_SHA="${SHA:0:7}"
 
 # ---------------------------------------------------------------------------
-# 1. Read and validate the judgment.
+# 1. Find the existing comment and recover the previous state.
+#
+# Done first: the note block is built by comparing this run's values with the last run's,
+# the same-commit rule needs the last run's answer, and --emit-prior needs nothing else.
+# ---------------------------------------------------------------------------
+# Written first, so the prompt never points at a missing file: every early exit below
+# leaves the model told "no triage yet" rather than nothing.
+[ -n "$EMIT_PRIOR" ] && echo "_No risk triage is published on this PR yet._" > "$EMIT_PRIOR"
+
+EXISTING_ID=""
+PRIOR_BODY=""
+if [ -n "$PRIOR_BODY_FILE" ] && [ -f "$PRIOR_BODY_FILE" ]; then
+  PRIOR_BODY="$(cat "$PRIOR_BODY_FILE")"
+elif [ "$DRY_RUN" -eq 0 ]; then
+  if ! LIST="$(gh api --paginate "repos/${REPO}/issues/${PR}/comments" 2>/tmp/_risk-list-err)"; then
+    # Never fall through to POST on a failed listing: that creates a SECOND sticky, and
+    # then does it again on every push. Skipping one update is the smaller harm.
+    echo "::warning::could not list PR comments; leaving the risk comment untouched this run."
+    sed 's/^/    /' /tmp/_risk-list-err >&2 || true
+    exit 0
+  fi
+  # Author-scoped: the marker alone would also match a human who quoted the comment in a
+  # reply, and this token can edit anyone's comment.
+  EXISTING="$(printf '%s' "$LIST" | jq -c --arg m "$MARKER" \
+    '[ (if type == "array" then .[] else . end)
+       | select(.user.type == "Bot")
+       | select((.body // "") | contains($m)) ] | .[0] // {}' 2>/dev/null || echo '{}')"
+  EXISTING_ID="$(printf '%s' "$EXISTING" | jq -r '.id // ""')"
+  PRIOR_BODY="$(printf '%s' "$EXISTING" | jq -r '.body // ""')"
+fi
+
+# The hidden state blob, base64 so a reason containing `-->` or a newline can neither
+# corrupt the comment nor break the next parse.
+PRIOR_STATE='{}'
+if [ -n "$PRIOR_BODY" ]; then
+  ENCODED="$(printf '%s' "$PRIOR_BODY" | grep -o "${STATE_PREFIX}[A-Za-z0-9+/=]*" | tail -n 1 | sed "s|${STATE_PREFIX}||" || true)"
+  if [ -n "${ENCODED:-}" ]; then
+    DECODED="$(printf '%s' "$ENCODED" | base64 --decode 2>/dev/null || true)"
+    if [ -n "$DECODED" ] && printf '%s' "$DECODED" | jq -e 'type == "object"' >/dev/null 2>&1; then
+      PRIOR_STATE="$DECODED"
+    fi
+  fi
+fi
+
+pget() { printf '%s' "$PRIOR_STATE" | jq -r --arg k "$1" '.[$k] // ""'; }
+PRIOR_LEVEL="$(pget level)"
+PRIOR_BLAST="$(pget blast)"; PRIOR_REV="$(pget reversibility)"; PRIOR_DET="$(pget detectability)"
+PRIOR_HAD_BEFORE="$(pget had_before)"
+PRIOR_NOTES="$(printf '%s' "$PRIOR_STATE" | jq -c '.notes // []' 2>/dev/null || echo '[]')"
+# Written since the same-commit rule: the full sha and the whole judgment as rendered. A
+# comment from before it has neither, and is then treated like any other commit.
+PRIOR_SHA="$(pget sha)"
+PRIOR_JUDGMENT="$(printf '%s' "$PRIOR_STATE" | jq -c '.judgment // null' 2>/dev/null || echo null)"
+
+if [ -n "$EMIT_PRIOR" ]; then
+  {
+    if [ -z "$PRIOR_LEVEL" ]; then
+      echo "_No risk triage is published on this PR yet._"
+    else
+      if [ -z "$PRIOR_SHA" ]; then
+        COMMIT_LINE="It does not record which commit it was written for, so treat the code as changed."
+      elif [ "$PRIOR_SHA" = "$SHA" ]; then
+        COMMIT_LINE="It was written for this same commit, so the code has not changed since."
+      else
+        COMMIT_LINE="It was written for an older commit, so the code has changed since."
+      fi
+      echo "## The risk triage currently on this PR"
+      echo
+      echo "$COMMIT_LINE"
+      echo
+      printf '%s' "$PRIOR_JUDGMENT" | jq -r \
+        --arg b "$PRIOR_BLAST" --arg r "$PRIOR_REV" --arg d "$PRIOR_DET" '
+        "- blast_radius: `\($b)`" + (if . != null and .blast_why != "" then " — \(.blast_why)" else "" end),
+        "- reversibility: `\($r)`" + (if . != null and .rev_why != "" then " — \(.rev_why)" else "" end),
+        "- detectability: `\($d)`" + (if . != null and .det_why != "" then " — \(.det_why)" else "" end)' \
+        2>/dev/null
+    fi
+  } > "$EMIT_PRIOR"
+  echo "Previous triage written to ${EMIT_PRIOR} (level ${PRIOR_LEVEL:-none})."
+  exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# 2. Read and validate the judgment.
 #
 # Strict on the three axes (they decide the level, so a typo must not silently become a
 # default), lenient on the prose (trimmed and flattened rather than rejected).
@@ -132,6 +225,45 @@ if [ -z "$JUDGMENT" ] || [ "$JUDGMENT" = "null" ]; then
   exit 0
 fi
 
+# ---------------------------------------------------------------------------
+# 3. Same commit: keep every axis that no reply moved.
+#
+# The diff is the same diff the last run read, so an axis may only move here because a
+# `/risk` reply gave a reason, and that shows as a credited entry in `adjustments`. Anything
+# else is the model answering the same question differently, and is undone:
+#   - no credited adjustment at all: the previous judgment stands, prose included, so the
+#     comment does not change wording with every reply that moves nothing;
+#   - some credited: those axes take the new value, every other axis and the confidence
+#     keep the old one, and a cleared "Before merge" comes back unless it was credited.
+# The prompt tells the model the same rule; this is what makes it true when it forgets.
+# ---------------------------------------------------------------------------
+HELD=""
+if [ -n "$PRIOR_SHA" ] && [ "$PRIOR_SHA" = "$SHA" ] \
+   && printf '%s' "$PRIOR_JUDGMENT" | jq -e 'type == "object"' >/dev/null 2>&1; then
+  HELD_JUDGMENT="$(jq -cn --argjson new "$JUDGMENT" --argjson old "$PRIOR_JUDGMENT" '
+    def credited($axis): any($new.adjustments[]; .axis == $axis and .why != "");
+    def keep($k; $why; $axis):
+      if .[$k] != $old[$k] and (credited($axis) | not)
+      then .[$k] = $old[$k] | .[$why] = $old[$why] else . end;
+    if ([ $new.adjustments[] | select(.why != "") ] | length) == 0
+    then $old + {adjustments: []}
+    else $new
+      | keep("blast"; "blast_why"; "blast_radius")
+      | keep("reversibility"; "rev_why"; "reversibility")
+      | keep("detectability"; "det_why"; "detectability")
+      | .confidence = $old.confidence
+      | if $old.before != "" and .before == "" and (credited("before_merge") | not)
+        then .before = $old.before else . end
+    end' 2>/dev/null || true)"
+  if [ -n "$HELD_JUDGMENT" ]; then
+    HELD="$(jq -rn --argjson a "$JUDGMENT" --argjson b "$HELD_JUDGMENT" '
+      [ "blast", "reversibility", "detectability", "confidence"
+        | select($a[.] != $b[.]) | "\(.) \($a[.]) → \($b[.])" ] | join(", ")')"
+    JUDGMENT="$HELD_JUDGMENT"
+    [ -n "$HELD" ] && echo "Same commit as the last triage; kept the previous value for: ${HELD}."
+  fi
+fi
+
 get() { printf '%s' "$JUDGMENT" | jq -r --arg k "$1" '.[$k] // ""'; }
 BLAST="$(get blast)"; REV="$(get reversibility)"; DET="$(get detectability)"
 CONF="$(get confidence)"
@@ -145,7 +277,7 @@ if [ -n "$REPLIES_FILE" ] && [ -s "$REPLIES_FILE" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 2. The level.
+# 4. The level.
 # ---------------------------------------------------------------------------
 LEVEL="medium"
 if [ "$REV" = "one-way" ] \
@@ -179,60 +311,14 @@ emoji_for() {
 }
 
 # ---------------------------------------------------------------------------
-# 3. Find the existing comment and recover the previous state.
-#
-# Done BEFORE rendering, because the note block is built by comparing this run's values
-# with the last run's, and because the accumulated history lives in that comment.
-# ---------------------------------------------------------------------------
-EXISTING_ID=""
-PRIOR_BODY=""
-if [ -n "$PRIOR_BODY_FILE" ] && [ -f "$PRIOR_BODY_FILE" ]; then
-  PRIOR_BODY="$(cat "$PRIOR_BODY_FILE")"
-elif [ "$DRY_RUN" -eq 0 ]; then
-  if ! LIST="$(gh api --paginate "repos/${REPO}/issues/${PR}/comments" 2>/tmp/_risk-list-err)"; then
-    # Never fall through to POST on a failed listing: that creates a SECOND sticky, and
-    # then does it again on every push. Skipping one update is the smaller harm.
-    echo "::warning::could not list PR comments; leaving the risk comment untouched this run."
-    sed 's/^/    /' /tmp/_risk-list-err >&2 || true
-    exit 0
-  fi
-  # Author-scoped: the marker alone would also match a human who quoted the comment in a
-  # reply, and this token can edit anyone's comment.
-  EXISTING="$(printf '%s' "$LIST" | jq -c --arg m "$MARKER" \
-    '[ (if type == "array" then .[] else . end)
-       | select(.user.type == "Bot")
-       | select((.body // "") | contains($m)) ] | .[0] // {}' 2>/dev/null || echo '{}')"
-  EXISTING_ID="$(printf '%s' "$EXISTING" | jq -r '.id // ""')"
-  PRIOR_BODY="$(printf '%s' "$EXISTING" | jq -r '.body // ""')"
-fi
-
-# The hidden state blob, base64 so a reason containing `-->` or a newline can neither
-# corrupt the comment nor break the next parse.
-PRIOR_STATE='{}'
-if [ -n "$PRIOR_BODY" ]; then
-  ENCODED="$(printf '%s' "$PRIOR_BODY" | grep -o "${STATE_PREFIX}[A-Za-z0-9+/=]*" | tail -n 1 | sed "s|${STATE_PREFIX}||" || true)"
-  if [ -n "${ENCODED:-}" ]; then
-    DECODED="$(printf '%s' "$ENCODED" | base64 --decode 2>/dev/null || true)"
-    if [ -n "$DECODED" ] && printf '%s' "$DECODED" | jq -e 'type == "object"' >/dev/null 2>&1; then
-      PRIOR_STATE="$DECODED"
-    fi
-  fi
-fi
-
-pget() { printf '%s' "$PRIOR_STATE" | jq -r --arg k "$1" '.[$k] // ""'; }
-PRIOR_LEVEL="$(pget level)"
-PRIOR_BLAST="$(pget blast)"; PRIOR_REV="$(pget reversibility)"; PRIOR_DET="$(pget detectability)"
-PRIOR_HAD_BEFORE="$(pget had_before)"
-PRIOR_NOTES="$(printf '%s' "$PRIOR_STATE" | jq -c '.notes // []' 2>/dev/null || echo '[]')"
-
-# ---------------------------------------------------------------------------
-# 4. Build the new note lines.
+# 5. Build the new note lines.
 #
 # Only when a `/risk` reply exists. A level that moves because the CODE changed is already
 # visible in the diff and needs no note; a level that moves because a person said something
 # does — that is the context the team asked not to lose.
 # ---------------------------------------------------------------------------
 NEW_NOTES='[]'
+READ_LINE='A `/risk` reply was read; it does not move any axis.'
 if [ "$REPLY_COUNT" -gt 0 ] && [ -n "$PRIOR_LEVEL" ]; then
   NEW_NOTES="$(jq -n \
     --argjson adj "$ADJUSTMENTS" \
@@ -282,23 +368,33 @@ if [ "$REPLY_COUNT" -gt 0 ] && [ -n "$PRIOR_LEVEL" ]; then
   # wonder whether the bot read it — but only while the note block is still empty. Every
   # later push re-reads the same replies and moves nothing, so without the guard this line
   # was appended again on each one until it filled the block.
+  #
+  # And only while the level held. When the code changed under a reply, the level can move
+  # with nothing credited; "it does not move any axis" above a new level is the false line
+  # pic-collage-stickers#1750 showed, so the table speaks for itself instead.
   if [ "$(printf '%s' "$NEW_NOTES" | jq 'length' 2>/dev/null || echo 0)" -eq 0 ] \
-     && [ "$(printf '%s' "$PRIOR_NOTES" | jq 'length' 2>/dev/null || echo 0)" -eq 0 ]; then
-    NEW_NOTES="$(jq -n --argjson adj "$ADJUSTMENTS" '
+     && [ "$(printf '%s' "$PRIOR_NOTES" | jq 'length' 2>/dev/null || echo 0)" -eq 0 ] \
+     && [ "$PRIOR_LEVEL" = "$LEVEL" ]; then
+    NEW_NOTES="$(jq -n --argjson adj "$ADJUSTMENTS" --arg read "$READ_LINE" '
       [ $adj[]
         | select(.why != "")
         | .why + (.source_url | if startswith("http") then " ([reply](\(.)))" else "" end) ]
       | .[0:1]
-      | if length == 0 then ["A `/risk` reply was read; it does not move any axis."] else . end' \
+      | if length == 0 then [$read] else . end' \
       2>/dev/null || echo '[]')"
   fi
 fi
 
+# The "read" line from an earlier run is dropped once the level moves: it was true when it
+# was written, but under a new level it reads as a claim about this one.
+KEEP_READ=1; [ -n "$PRIOR_LEVEL" ] && [ "$PRIOR_LEVEL" != "$LEVEL" ] && KEEP_READ=0
 NOTES="$(jq -n --argjson old "$PRIOR_NOTES" --argjson new "$NEW_NOTES" --argjson max "$MAX_NOTES" \
-  '($old + ($new - $old)) | .[-$max:]' 2>/dev/null || echo '[]')"
+  --arg read "$READ_LINE" --argjson keep "$KEEP_READ" \
+  '($old + ($new - $old)) | map(select($keep == 1 or . != $read)) | .[-$max:]' \
+  2>/dev/null || echo '[]')"
 
 # ---------------------------------------------------------------------------
-# 5. Render.
+# 6. Render.
 #
 # Low gets two lines and no table. A three-row table on a locale-only PR is exactly the
 # noise the backend reviewer was rewritten to stop producing, and most PRs are Low.
@@ -351,20 +447,22 @@ BODY="${BODY}
 # The state this run hands to the next one.
 HAD_BEFORE="no"; [ -n "$BEFORE" ] && HAD_BEFORE="yes"
 STATE_B64="$(jq -cn --arg l "$LEVEL" --arg b "$BLAST" --arg r "$REV" --arg d "$DET" \
-  --arg hb "$HAD_BEFORE" --argjson n "$NOTES" \
-  '{level:$l, blast:$b, reversibility:$r, detectability:$d, had_before:$hb, notes:$n}' \
+  --arg hb "$HAD_BEFORE" --argjson n "$NOTES" --arg sha "$SHA" \
+  --argjson j "$(printf '%s' "$JUDGMENT" | jq -c 'del(.adjustments)')" \
+  '{level:$l, blast:$b, reversibility:$r, detectability:$d, had_before:$hb, notes:$n,
+    sha:$sha, judgment:$j}' \
   | base64 | tr -d '\n')"
 BODY="${BODY}
 ${STATE_PREFIX}${STATE_B64} -->"
 
 if [ "$DRY_RUN" -eq 1 ]; then
-  echo "--- level: ${LEVEL} (blast=${BLAST} reversibility=${REV} detectability=${DET} confidence=${CONF} bumped=${BUMPED} replies=${REPLY_COUNT} prior=${PRIOR_LEVEL:-none}) ---"
+  echo "--- level: ${LEVEL} (blast=${BLAST} reversibility=${REV} detectability=${DET} confidence=${CONF} bumped=${BUMPED} replies=${REPLY_COUNT} prior=${PRIOR_LEVEL:-none} held=${HELD:-none}) ---"
   echo "$BODY"
   exit 0
 fi
 
 # ---------------------------------------------------------------------------
-# 6. Upsert the one sticky comment.
+# 7. Upsert the one sticky comment.
 #
 # Edited in place on every run. A comment edit sends no notification, so refreshing the
 # level costs the author nothing — while a new comment per push would be the exact noise
