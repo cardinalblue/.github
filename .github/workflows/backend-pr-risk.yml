@@ -433,7 +433,7 @@ jobs:
           # SAA and Claude open PRs a human still merges, so bot-authored PRs are
           # triaged on purpose (see each repo's pr-risk.yml). The action blocks bot
           # actors unless they are listed here; comma separates them.
-          allowed_bots: "piccollage-backend-saa,claude"
+          allowed_bots: "pic-backend-saa,claude"
           prompt: |
             REPO: ${{ github.repository }}
             PR NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}

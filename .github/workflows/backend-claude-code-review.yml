@@ -149,7 +149,11 @@ on:
     secrets:
       ANTHROPIC_API_KEY:
         required: true
-      DOCS_REPO_PAT:
+      # The pic-backend-ci GitHub App. It is installed only on cardinalblue/docs and
+      # has Contents read-only, so its token can do nothing but read the coding standards.
+      BACKEND_CI_APP_ID:
+        required: true
+      BACKEND_CI_APP_PRIVATE_KEY:
         required: true
 
 jobs:
@@ -181,12 +185,23 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 1
 
+      # A one-hour pic-backend-ci token, limited to reading cardinalblue/docs.
+      - name: Mint docs read token
+        id: docs-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.BACKEND_CI_APP_ID }}
+          private-key: ${{ secrets.BACKEND_CI_APP_PRIVATE_KEY }}
+          owner: cardinalblue
+          repositories: docs
+          permission-contents: read
+
       - name: Checkout coding standards
         uses: actions/checkout@v4
         with:
           repository: cardinalblue/docs
           path: coding-standards
-          token: ${{ secrets.DOCS_REPO_PAT }}
+          token: ${{ steps.docs-token.outputs.token }}
           fetch-depth: 1
 
       # Helper scripts live beside this workflow, in this repo. See the `scripts_ref` input
